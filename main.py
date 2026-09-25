@@ -1,4 +1,5 @@
 import os
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from google import genai
@@ -17,21 +18,31 @@ async def process_video(req: VideoRequest):
     if not url:
         raise HTTPException(status_code=400, detail="URL tidak boleh kosong")
 
+    # 1. Ekstrak Direct Stream MP4 via API Cobalt Public
     try:
-        # AI menganalisis potongan terbaik (start & end time)
-        prompt = f"Analisis video YouTube ini: {url}. Tentukan 1 momen paling menarik/viral berdurasi 30 detik. Kembalikan format JSON persis seperti ini tanpa markdown: {{\"title\": \"Judul Momen\", \"start_sec\": 10, \"end_sec\": 40, \"score\": 9.8}}"
+        cobalt_res = requests.post(
+            "https://api.cobalt.tools/api/json",
+            json={"url": url, "vCodec": "h264"},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=10
+        ).json()
         
+        mp4_download_url = cobalt_res.get("url", url)
+    except Exception:
+        mp4_download_url = url
+
+    # 2. Analisis AI Momen
+    try:
+        prompt = f"Analisis video YouTube ini: {url}. Tentukan 1 momen paling viral. Kembalikan JSON tanpa markdown: {{\"title\": \"Klip Highlight Viral\", \"start_sec\": 10, \"end_sec\": 40}}"
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt
         )
-        
         return response.text
-    except Exception as e:
-        # Fallback timestamp jika limitasi jaringan
+    except Exception:
         return {
-            "title": "Klip Highlight Viral",
-            "start_sec": 5,
-            "end_sec": 35,
-            "score": 9.8
+            "title": "Klip Highlight Viral MP4",
+            "download_url": mp4_download_url,
+            "start_sec": 10,
+            "end_sec": 40
         }
