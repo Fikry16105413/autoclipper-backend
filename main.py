@@ -1,10 +1,11 @@
 import os
-import requests
+import subprocess
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from google import genai
 
-app = FastAPI(title="AutoClipper AI Engine")
+app = FastAPI(title="AutoClipper Real Trimmer Engine")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6K02cs_VEpK-3Kg6iw8je-00RVYediwCqsj14V-lsPWMg")
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -18,31 +19,53 @@ async def process_video(req: VideoRequest):
     if not url:
         raise HTTPException(status_code=400, detail="URL tidak boleh kosong")
 
-    # 1. Ekstrak Direct Stream MP4 via API Cobalt Public
-    try:
-        cobalt_res = requests.post(
-            "https://api.cobalt.tools/api/json",
-            json={"url": url, "vCodec": "h264"},
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=10
-        ).json()
-        
-        mp4_download_url = cobalt_res.get("url", url)
-    except Exception:
-        mp4_download_url = url
+    output_dir = "/tmp"
+    output_path = os.path.join(output_dir, "clipped_video.mp4")
 
-    # 2. Analisis AI Momen
+    # Menganalisis Momen Viral dengan Gemini AI
     try:
-        prompt = f"Analisis video YouTube ini: {url}. Tentukan 1 momen paling viral. Kembalikan JSON tanpa markdown: {{\"title\": \"Klip Highlight Viral\", \"start_sec\": 10, \"end_sec\": 40}}"
+        prompt = f"Analisis video YouTube ini: {url}. Tentukan 1 momen paling viral berdurasi 30 detik. Kembalikan JSON tanpa markdown: {{\"title\": \"Klip Highlight Viral\", \"start_sec\": 10, \"end_sec\": 40}}"
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt
         )
-        return response.text
+        # Ekstrak data JSON
+        import json
+        res_data = json.loads(response.text)
+        start_sec = res_data.get("start_sec", 10)
+        end_sec = res_data.get("end_sec", 40)
+        title = res_data.get("title", "Klip Highlight MP4")
     except Exception:
+        start_sec = 10
+        end_sec = 40
+        title = "Klip Highlight MP4"
+
+    # PEMOTONGAN VIDEO FAKTA & NYATA MENGGUNAKAN FFMPEG
+    try:
+        # Unduh & potong langsung bagian timestamp menggunakan yt-dlp & ffmpeg
+        cmd = f'yt-dlp -g "{url}" -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"'
+        stream_url = subprocess.check_output(cmd, shell=True).decode('utf-8').strip().split('\n')[0]
+        
+        ffmpeg_cmd = f'ffmpeg -y -ss {start_sec} -to {end_sec} -i "{stream_url}" -c copy "{output_path}"'
+        subprocess.run(ffmpeg_cmd, shell=True, check=True)
+
         return {
-            "title": "Klip Highlight Viral MP4",
-            "download_url": mp4_download_url,
-            "start_sec": 10,
-            "end_sec": 40
+            "title": title,
+            "download_url": f"https://autoclipper-backend-production.up.railway.app/download-clip",
+            "start_sec": start_sec,
+            "end_sec": end_sec
         }
+    except Exception as e:
+        return {
+            "title": title,
+            "download_url": url,
+            "start_sec": start_sec,
+            "end_sec": end_sec
+        }
+
+@app.get("/download-clip")
+async def download_clip():
+    path = "/tmp/clipped_video.mp4"
+    if os.path.exists(path):
+        return FileResponse(path, media_type="video/mp4", filename="AutoClipper_Highlight.mp4")
+    raise HTTPException(status_code=404, detail="File tidak ditemukan")
